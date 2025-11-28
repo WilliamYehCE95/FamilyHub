@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🍎 家庭中心 - Family Hub</title>
+    <!-- PWA 相關優化標籤，確保添加到主畫面時是全螢幕 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="家庭中心">
+
     <!-- 載入 Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- 載入 React, ReactDOM CDN -->
@@ -12,6 +17,11 @@
     <!-- 載入 Babel 進行 JSX 轉譯 (僅用於開發/單文件) -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+    <!-- Firebase CDN for Firestore and Auth (REQUIRED for storage) -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"></script>
+    
     <!-- 設定 Tailwind CSS 配置，使用 Inter 字體並確保中文字體可讀 -->
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Noto+Sans+TC:wght@100..900&display=swap');
@@ -32,11 +42,51 @@
 
     <!-- 所有的 React/JSX 程式碼放在 type="text/babel" 的 script 標籤內 -->
     <script type="text/babel">
-    const { useState, useEffect, useMemo } = React;
+    const { useState, useEffect, useMemo, createContext, useContext } = React;
     const { createRoot } = ReactDOM;
+    
+    // --- 輔助函數 ---
+    // 檢查 Firebase 全局對象是否可用
+    const getFirebaseDependencies = () => {
+        if (typeof firebase === 'undefined' || !firebase.firestore || !firebase.auth) {
+            console.error("Firebase is not initialized or CDN dependencies are missing.");
+            return null;
+        }
+        return {
+            initializeApp: firebase.initializeApp,
+            getAuth: firebase.auth.getAuth,
+            signInAnonymously: firebase.auth.signInAnonymously,
+            signInWithCustomToken: firebase.auth.signInWithCustomToken,
+            onAuthStateChanged: firebase.auth.onAuthStateChanged,
+            getFirestore: firebase.firestore.getFirestore,
+            collection: firebase.firestore.collection,
+            onSnapshot: firebase.firestore.onSnapshot,
+            addDoc: firebase.firestore.addDoc,
+            query: firebase.firestore.query,
+            orderBy: firebase.firestore.orderBy,
+            serverTimestamp: firebase.firestore.serverTimestamp,
+            setLogLevel: firebase.firestore.setLogLevel,
+            // 由於 firestore.js 11.x 版的結構，我們需要確保所有函式都被正確引用
+            ...firebase.firestore,
+            ...firebase.auth,
+        };
+    };
+
+    // 格式化活動日期顯示
+    const formatDate = (dateString) => {
+        const date = new Date(dateString);
+        return date.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }).replace(/\//g, '/');
+    };
+
+    const formatTime = (dateString) => {
+        const date = new Date(dateString);
+        return date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false });
+    };
+
+    // --- Firebase 上下文 ---
+    const FirebaseContext = createContext(null);
 
     // --- 簡化的 Lucide Icons (Inline SVGs) ---
-    // 由於無法使用 import 載入 lucide-react，我們手動定義需要的圖標元件
     const IconWrapper = ({ children, className = 'w-6 h-6', ...rest }) => (
         <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" {...rest}>
             {children}
@@ -50,98 +100,298 @@
     const MessageSquare = (props) => (<IconWrapper {...props}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></IconWrapper>);
     const Search = (props) => (<IconWrapper {...props}><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></IconWrapper>);
     const ChevronRight = (props) => (<IconWrapper {...props}><path d="M9 18l6-6-6-6"></path></IconWrapper>);
-
+    const Plus = (props) => (<IconWrapper {...props}><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></IconWrapper>);
 
     // --- 模擬數據 (Mock Data) ---
+    // 移除 events 數據，改為從 Firestore 獲取
     const mockData = {
-      // 家規
-      rules: [
-        "尊重彼此，保持禮貌。",
-        "完成學校作業後才能玩樂。",
-        "保持房間整潔，自己的事情自己做。",
-        "晚上 9 點準時上床睡覺。",
-        "用餐時不使用電子產品。",
-        "主動幫助家人。",
-      ],
-      
-      // 榮譽榜 (Honor Roll)
+      rules: ["尊重彼此，保持禮貌。", "完成學校作業後才能玩樂。", "保持房間整潔，自己的事情自己做。", "晚上 9 點準時上床睡覺。", "用餐時不使用電子產品。", "主動幫助家人。", ],
       honorRoll: [
         { name: "小明", points: 120, achievement: "本週最佳助人者" },
         { name: "小華", points: 95, achievement: "閱讀習慣進步獎" },
         { name: "小美", points: 150, achievement: "數學測驗滿分" },
       ],
-      
-      // 重要資訊宣導 (Announcements)
-      announcements: [
-        "本週末家庭活動：週六下午野餐。",
-        "請檢查小明是否有帶體育課用品。",
-        "下週三晚上 7 點家庭會議。",
-      ],
-      
-      // 常用查詢 (Common Queries)
+      announcements: ["本週末家庭活動：週六下午野餐。", "請檢查小明是否有帶體育課用品。", "下週三晚上 7 點家庭會議。", ],
       queries: [
         { title: "學校網站", url: "#", icon: "🏫" },
         { title: "今日天氣", url: "#", icon: "☀️" },
         { title: "圖書館借閱查詢", url: "#", icon: "📚" },
         { title: "健康碼/防疫資訊", url: "#", icon: "🛡️" },
       ],
-
-      // 每日一句分享 (Daily Quote)
       dailyQuote: {
         quote: "家庭是我們生命中唯一的避風港。",
         source: "Leo Tolstoy",
       },
-      
-      // 行事曆 (Calendar - 簡化本週活動)
-      events: [
-        { day: "一", date: 27, title: "鋼琴課", time: "18:00" },
-        { day: "二", date: 28, title: "足球訓練", time: "16:30" },
-        { day: "三", date: 29, title: "家庭電影之夜", time: "19:30" },
-        { day: "四", date: 30, title: "英語補習", time: "17:00" },
-        { day: "五", date: 1, title: "自由活動日", time: "全天" },
-        { day: "六", date: 2, title: "野餐活動", time: "14:00" },
-        { day: "日", date: 3, title: "拜訪爺爺奶奶", time: "10:00" },
-      ],
     };
 
-    // --- 功能組件 (Feature Components) ---
+    // --- 新增活動表單元件 ---
+    const AddEventForm = ({ onClose, db, collectionRef }) => {
+        const [title, setTitle] = useState('');
+        const [dateTime, setDateTime] = useState('');
+        const [isLoading, setIsLoading] = useState(false);
+        const [error, setError] = useState(null);
 
-    // 1. 行事曆 (Calendar View)
-    const CalendarView = ({ events }) => {
-      // 簡化模擬：直接使用今天的日期作為 "today"
-      const today = 29; // 假設今天是 29 日
-      
-      return (
-        <div className="space-y-4">
-          <h2 className="text-xl font-bold text-gray-800">本週活動總覽</h2>
-          <div className="grid grid-cols-7 gap-1 text-center font-medium text-sm border-b pb-2">
-            {events.map((event, index) => (
-              <div key={index} className={`p-2 rounded-lg transition duration-150 ease-in-out ${event.date === today ? 'bg-indigo-600 text-white shadow-lg scale-105' : 'text-gray-600 hover:bg-gray-100'}`}>
-                <div className="text-xs font-light">{event.day}</div>
-                <div className="text-lg font-bold mt-0.5">{event.date}</div>
-              </div>
-            ))}
-          </div>
-          
-          <div className="space-y-2">
-            <h3 className="text-lg font-semibold text-gray-700">詳細行程</h3>
-            {events.map((event, index) => (
-              <div key={index} className="flex items-center p-3 bg-white rounded-xl shadow-sm border border-gray-100">
-                <div className="flex-shrink-0 w-12 text-center text-sm font-semibold text-indigo-600">
-                  {event.day} {event.date}
+        const handleSubmit = async (e) => {
+            e.preventDefault();
+            setError(null);
+            
+            if (!title || !dateTime) {
+                setError("請填寫活動標題和日期/時間。");
+                return;
+            }
+
+            if (!db) {
+                setError("資料庫尚未準備好，請稍候。");
+                return;
+            }
+
+            setIsLoading(true);
+            try {
+                // 將日期時間字串轉換為 Date 物件，並將其儲存到 Firestore
+                const eventDate = new Date(dateTime);
+                
+                await addDoc(collectionRef, {
+                    title,
+                    timestamp: eventDate.getTime(), // 儲存時間戳記以便排序
+                    datetime: eventDate.toISOString(), // 儲存 ISO 格式的日期時間
+                    createdAt: serverTimestamp(),
+                });
+
+                setTitle('');
+                setDateTime('');
+                onClose();
+            } catch (err) {
+                console.error("新增活動失敗: ", err);
+                setError("新增活動失敗，請檢查網路連線。");
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        // 預設日期時間為當前時間，以方便輸入
+        useEffect(() => {
+            const now = new Date();
+            // 格式化為 YYYY-MM-DDTHH:MM，符合 input type="datetime-local" 格式
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            setDateTime(`${year}-${month}-${day}T${hours}:${minutes}`);
+        }, []);
+
+
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+                <div 
+                    className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl transform transition-all duration-300 scale-100"
+                    onClick={(e) => e.stopPropagation()} // 阻止點擊表單時關閉
+                >
+                    <h3 className="text-2xl font-bold text-indigo-600 mb-4">新增家庭活動</h3>
+                    
+                    {error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
+                            {error}
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label htmlFor="title" className="block text-sm font-medium text-gray-700 mb-1">活動標題</label>
+                            <input
+                                id="title"
+                                type="text"
+                                value={title}
+                                onChange={(e) => setTitle(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                                placeholder="例如：小明鋼琴課、家庭野餐"
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label htmlFor="dateTime" className="block text-sm font-medium text-gray-700 mb-1">日期和時間</label>
+                            <input
+                                id="dateTime"
+                                type="datetime-local"
+                                value={dateTime}
+                                onChange={(e) => setDateTime(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-xl focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                                required
+                            />
+                        </div>
+
+                        <div className="flex justify-end space-x-3 pt-2">
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                className="px-4 py-2 text-gray-600 bg-gray-100 rounded-xl font-medium hover:bg-gray-200 transition duration-150"
+                                disabled={isLoading}
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="submit"
+                                className="px-4 py-2 text-white bg-indigo-600 rounded-xl font-medium hover:bg-indigo-700 shadow-md transition duration-150 flex items-center justify-center"
+                                disabled={isLoading}
+                            >
+                                {isLoading ? (
+                                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                ) : (
+                                    '儲存活動'
+                                )}
+                            </button>
+                        </div>
+                    </form>
                 </div>
-                <div className="ml-4 flex-grow">
-                  <p className="text-gray-900 font-medium">{event.title}</p>
-                  <p className="text-xs text-gray-500">{event.time}</p>
-                </div>
-                <ChevronRight className="h-5 w-5 text-gray-400" />
-              </div>
-            ))}
-          </div>
-        </div>
-      );
+            </div>
+        );
     };
 
+
+    // --- 1. 行事曆 (Calendar View) ---
+    const CalendarView = () => {
+        const { firebase, db, isAuthReady } = useContext(FirebaseContext);
+        const [events, setEvents] = useState([]);
+        const [isLoading, setIsLoading] = useState(true);
+        const [isModalOpen, setIsModalOpen] = useState(false);
+        const [error, setError] = useState(null);
+
+        // 確保 Firebase 和 Firestore 函式可用
+        if (!firebase) return <div className="p-8 text-center text-red-500">Firebase 載入失敗。</div>;
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const collectionPath = `artifacts/${appId}/public/data/familyEvents`;
+        const collectionRef = db ? firebase.collection(db, collectionPath) : null;
+
+        useEffect(() => {
+            if (!isAuthReady || !db || !collectionRef) {
+                // 如果認證或資料庫未準備好，則不監聽
+                setIsLoading(true);
+                return;
+            }
+
+            // 設置即時監聽器 (onSnapshot)
+            try {
+                // 查詢：按照 timestamp 升序排列
+                const q = firebase.query(collectionRef, firebase.orderBy('timestamp', 'asc'));
+                
+                const unsubscribe = firebase.onSnapshot(q, (snapshot) => {
+                    const fetchedEvents = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data(),
+                        // 確保 timestamp 是一個數組可用的數字
+                        timestamp: doc.data().timestamp || new Date().getTime(),
+                    }));
+                    
+                    // 由於我們只顯示當前週的事件，需要過濾
+                    const today = new Date();
+                    const startOfWeek = new Date(today);
+                    startOfWeek.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1)); // 星期一
+                    startOfWeek.setHours(0, 0, 0, 0);
+
+                    const endOfWeek = new Date(startOfWeek);
+                    endOfWeek.setDate(startOfWeek.getDate() + 7);
+                    
+                    const currentWeekEvents = fetchedEvents.filter(event => {
+                        const eventDate = new Date(event.datetime);
+                        return eventDate >= startOfWeek && eventDate < endOfWeek;
+                    });
+                    
+                    setEvents(currentWeekEvents);
+                    setIsLoading(false);
+                }, (err) => {
+                    console.error("Firestore 監聽失敗: ", err);
+                    setError("載入活動清單時發生錯誤。");
+                    setIsLoading(false);
+                });
+
+                // 清理監聽器
+                return () => unsubscribe();
+            } catch (e) {
+                console.error("Firestore 查詢設置失敗: ", e);
+                setError("無法設定資料庫連線。");
+                setIsLoading(false);
+            }
+        }, [isAuthReady, db, firebase]); // 依賴於認證狀態和 db 實例
+
+        const calendarDays = ['一', '二', '三', '四', '五', '六', '日'];
+        const currentMonth = new Date().getMonth() + 1;
+        const todayDay = new Date().getDay() === 0 ? 7 : new Date().getDay(); // 1(Mon) to 7(Sun)
+        
+        return (
+            <div className="space-y-6">
+                <div className="flex justify-between items-center">
+                    <h2 className="text-2xl font-bold text-gray-800">
+                        🗓️ {currentMonth} 月活動 (即時更新)
+                    </h2>
+                    <button 
+                        onClick={() => setIsModalOpen(true)}
+                        className="flex items-center space-x-1 px-4 py-2 bg-indigo-600 text-white rounded-full shadow-lg hover:bg-indigo-700 transition duration-150 transform hover:scale-105"
+                    >
+                        <Plus className="w-5 h-5" />
+                        <span className="text-sm font-medium">新增活動</span>
+                    </button>
+                </div>
+
+                <div className="grid grid-cols-7 gap-1 text-center font-medium text-sm border-b pb-2">
+                    {calendarDays.map((day, index) => (
+                        <div key={index} className={`p-2 rounded-lg ${index + 1 === todayDay ? 'bg-indigo-100 text-indigo-800' : 'text-gray-600'}`}>
+                            <div className="text-xs font-light">{day}</div>
+                        </div>
+                    ))}
+                </div>
+                
+                <div className="space-y-3">
+                    <h3 className="text-lg font-semibold text-gray-700">詳細行程</h3>
+                    
+                    {isLoading && (
+                        <div className="text-center p-8 text-indigo-500">
+                            <svg className="animate-spin mx-auto h-8 w-8 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            <p className="mt-2">正在從雲端載入活動...</p>
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="text-center p-4 bg-red-100 text-red-700 rounded-xl">
+                            {error}
+                        </div>
+                    )}
+                    
+                    {!isLoading && events.length === 0 && !error && (
+                        <div className="text-center p-8 bg-white rounded-xl shadow-lg text-gray-500">
+                            目前沒有任何活動。點擊右上角的「新增活動」來規劃您的家庭行程吧！
+                        </div>
+                    )}
+
+                    {events.map((event) => (
+                        <div 
+                            key={event.id} 
+                            className="flex items-center p-3 bg-white rounded-xl shadow-md border border-gray-100 hover:shadow-lg transition duration-150"
+                        >
+                            <div className="flex-shrink-0 w-16 text-center text-sm font-semibold text-indigo-600">
+                                <p className="text-xs text-gray-500">{formatDate(event.datetime)}</p>
+                                <p className="text-lg font-bold">{formatTime(event.datetime)}</p>
+                            </div>
+                            <div className="ml-4 flex-grow">
+                                <p className="text-gray-900 font-medium text-lg">{event.title}</p>
+                            </div>
+                            <ChevronRight className="h-5 w-5 text-gray-400" />
+                        </div>
+                    ))}
+                </div>
+                
+                {isModalOpen && (
+                    <AddEventForm 
+                        onClose={() => setIsModalOpen(false)} 
+                        db={db}
+                        collectionRef={collectionRef}
+                    />
+                )}
+            </div>
+        );
+    };
+
+    // --- 其他功能組件 (略，保持不變) ---
     // 2. 家規 (House Rules)
     const RulesView = ({ rules }) => (
       <div className="space-y-4">
@@ -264,11 +514,49 @@
 
     const App = () => {
       const [activeTab, setActiveTab] = useState('calendar');
+      const [firebaseState, setFirebaseState] = useState({ db: null, auth: null, userId: null, isAuthReady: false, firebase: null });
+
+      // Firebase 初始化與認證
+      useEffect(() => {
+          const initFirebase = async () => {
+              const firebase = getFirebaseDependencies();
+              if (!firebase) return;
+
+              try {
+                  const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                  const app = firebase.initializeApp(firebaseConfig);
+                  const db = firebase.getFirestore(app);
+                  const auth = firebase.getAuth(app);
+                  
+                  // 設定 Firebase 服務狀態
+                  setFirebaseState(prev => ({ ...prev, db, auth, firebase }));
+
+                  // 登入處理
+                  if (typeof __initial_auth_token !== 'undefined') {
+                      await firebase.signInWithCustomToken(auth, __initial_auth_token);
+                  } else {
+                      await firebase.signInAnonymously(auth);
+                  }
+
+                  // 監聽認證狀態變化
+                  firebase.onAuthStateChanged(auth, (user) => {
+                      const userId = user?.uid || crypto.randomUUID();
+                      setFirebaseState(prev => ({ ...prev, userId, isAuthReady: true }));
+                  });
+
+              } catch (error) {
+                  console.error("Firebase 初始化或認證失敗: ", error);
+                  setFirebaseState(prev => ({ ...prev, isAuthReady: true })); // 即使失敗也要標記為就緒
+              }
+          };
+
+          initFirebase();
+      }, []); // 只在元件掛載時執行一次
 
       const renderContent = useMemo(() => {
         switch (activeTab) {
           case 'calendar':
-            return <CalendarView events={mockData.events} />;
+            return <CalendarView />; // CalendarView 現在從 context 獲取數據
           case 'rules':
             return <RulesView rules={mockData.rules} />;
           case 'honor':
@@ -283,44 +571,51 @@
       }, [activeTab]);
 
       return (
-        <div className="min-h-screen bg-gray-50 font-sans antialiased flex flex-col items-center">
-          
-          {/* 頂部標題區域 */}
-          <header className="w-full max-w-lg bg-white border-b border-gray-200 shadow-sm p-4 sticky top-0 z-10">
-            <h1 className="text-2xl font-extrabold text-center text-gray-900">
-              🍎 家庭中心
-            </h1>
-            <p className="text-center text-sm text-gray-500">
-              Family Hub
-            </p>
-          </header>
-          
-          {/* 內容區域 */}
-          <main className="w-full max-w-lg p-4 pb-24 flex-grow">
-            {renderContent}
-          </main>
+        <FirebaseContext.Provider value={firebaseState}>
+          <div className="min-h-screen bg-gray-50 font-sans antialiased flex flex-col items-center">
+            
+            {/* 頂部標題區域 */}
+            <header className="w-full max-w-lg bg-white border-b border-gray-200 shadow-sm p-4 sticky top-0 z-10">
+              <h1 className="text-2xl font-extrabold text-center text-gray-900">
+                🍎 家庭中心
+              </h1>
+              <p className="text-center text-sm text-gray-500">
+                Family Hub
+              </p>
+            </header>
+            
+            {/* 內容區域 */}
+            <main className="w-full max-w-lg p-4 pb-24 flex-grow">
+              {firebaseState.isAuthReady ? renderContent : (
+                <div className="text-center p-10 text-indigo-500">
+                  <svg className="animate-spin mx-auto h-8 w-8" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                  <p className="mt-2">應用程式初始化中...</p>
+                </div>
+              )}
+            </main>
 
-          {/* 底部導航欄 (Mobile Navigation) */}
-          <nav className="fixed bottom-0 w-full max-w-lg bg-white border-t border-gray-200 shadow-xl z-20">
-            <div className="flex justify-around h-16">
-              {TABS.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`flex flex-col items-center justify-center flex-grow transition duration-150 ease-in-out ${
-                    activeTab === tab.id
-                      ? `${tab.color} font-bold transform scale-110`
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  <tab.Icon className="w-6 h-6" />
-                  <span className="text-xs mt-0.5">{tab.label}</span>
-                </button>
-              ))}
-            </div>
-          </nav>
-          
-        </div>
+            {/* 底部導航欄 (Mobile Navigation) */}
+            <nav className="fixed bottom-0 w-full max-w-lg bg-white border-t border-gray-200 shadow-xl z-20">
+              <div className="flex justify-around h-16">
+                {TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex flex-col items-center justify-center flex-grow transition duration-150 ease-in-out ${
+                      activeTab === tab.id
+                        ? `${tab.color} font-bold transform scale-110`
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    <tab.Icon className="w-6 h-6" />
+                    <span className="text-xs mt-0.5">{tab.label}</span>
+                  </button>
+                ))}
+              </div>
+            </nav>
+            
+          </div>
+        </FirebaseContext.Provider>
       );
     };
 
